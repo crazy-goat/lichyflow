@@ -51,7 +51,7 @@ func (b *BashExecutor) Run(ctx context.Context, state *session.State, step *pipe
 		if cmd.Process != nil && cmd.Process.Pid > 0 {
 			pgid, err := syscall.Getpgid(cmd.Process.Pid)
 			if err == nil && pgid > 0 {
-				syscall.Kill(-pgid, syscall.SIGKILL)
+				_ = syscall.Kill(-pgid, syscall.SIGKILL)
 			}
 		}
 		return nil

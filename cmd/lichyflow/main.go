@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -276,16 +275,4 @@ func runUnsetFlag(cmd *cobra.Command, args []string) error {
 	}
 	store := session.NewStore(resolveStoreDir())
 	return store.SetFlag(sid, args[0], false)
-}
-
-// absPath returns the absolute path for a potentially relative path.
-func absPath(p string) string {
-	if filepath.IsAbs(p) {
-		return p
-	}
-	wd, err := os.Getwd()
-	if err != nil {
-		return p
-	}
-	return filepath.Join(wd, p)
 }
