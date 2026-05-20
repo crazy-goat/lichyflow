@@ -62,7 +62,9 @@ func (e *Engine) Run(ctx context.Context) (int, error) {
 			exitCode := e.pipeline.GetExitCode(current)
 			state.Exited = true
 			state.ExitCode = exitCode
-			e.store.Save(state)
+			if err := e.store.Save(state); err != nil {
+				return exitCode, fmt.Errorf("save state: %w", err)
+			}
 			log.Printf("[%s] Pipeline exited at %q with code %d", state.SessionID, current, exitCode)
 			return exitCode, nil
 		}
@@ -89,7 +91,9 @@ func (e *Engine) Run(ctx context.Context) (int, error) {
 		// Transition to next state
 		current = next
 		state.CurrentState = current
-		e.store.Save(state)
+		if err := e.store.Save(state); err != nil {
+			return e.pipeline.GetExitCode("failed"), fmt.Errorf("save state: %w", err)
+		}
 	}
 }
 
@@ -119,7 +123,7 @@ func (e *Engine) executeStepWithRetries(ctx context.Context, state *session.Stat
 
 		if attempt < maxRetry {
 			// Record retry count
-			e.store.IncrementRetry(state.SessionID, step.Name)
+			_, _ = e.store.IncrementRetry(state.SessionID, step.Name)
 		}
 	}
 
@@ -271,7 +275,7 @@ func (e *Engine) checkRequirements() error {
 			if req.Hint != "" {
 				msg += "\n  hint: " + req.Hint
 			}
-			return fmt.Errorf(msg)
+			return fmt.Errorf("%s", msg)
 		}
 		log.Printf("[requirements] \u2713 %s", label)
 	}
