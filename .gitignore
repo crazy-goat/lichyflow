@@ -12,3 +12,4 @@ pi-stream
 # IDE
 .idea/
 .vscode/
+temp/

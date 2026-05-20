@@ -1,5 +1,8 @@
 # Lichyflow self-hosted pipeline
 # ENV: REPO_URL, REPO_DEFAULT_BRANCH, ISSUE_NUMBER
+#
+# Bash scripts live in ci/ — each step calls its script.
+# You can test individual scripts: ISSUE_NUMBER=42 ARTIFACT_DIR=/tmp bash ci/fetch_issue.sh
 
 pipeline:
   name: lichyflow-issue-fix
@@ -15,156 +18,88 @@ pipeline:
       hint: Login with gh auth login
     - command: go
       hint: Install Go (apt install golang / brew install go)
-    - command: pi
-      hint: Install pi coding agent (npm install -g @earendil-works/pi-coding-agent)
     - command: pi-stream
-      hint: Install from github.com/crazy-goat/pi-stream (cd ~/work/pi-stream && make install)
+      hint: Install pi-stream (github.com/crazy-goat/pi-stream)
 
   exits:
     - name: ci_failed
       exit_code: 2
     - name: no_issues
       exit_code: 3
+    - name: loop_exhausted
+      exit_code: 4
+    - name: build_failed
+      exit_code: 5
 
   steps:
     - name: setup_repo
       type: bash
-      command: |
-        if [ ! -d .git ]; then
-          git clone "$REPO_URL" . 2>&1
-        fi
-        git fetch origin
-        git checkout "$REPO_DEFAULT_BRANCH"
-        git reset --hard "origin/$REPO_DEFAULT_BRANCH"
-        git pull origin "$REPO_DEFAULT_BRANCH"
-        DEFAULT_BRANCH=$(git branch --show-current)
-        lichyflow set value default_branch "$DEFAULT_BRANCH"
-        lichyflow set value test_loop 0
+      command: bash "$PIPELINE_DIR/ci/setup_repo.sh"
       retry:
         max: 2
         backoff: exponential
         initial_delay: 5s
       timeout: 120
 
-    - name: create_branch
-      type: bash
-      command: |
-        DEFAULT_BRANCH=$(lichyflow get value default_branch)
-        ISSUE_NUMBER="$ISSUE_NUMBER"
-        SLUG=$(gh issue view "$ISSUE_NUMBER" --json title -q '.title' 2>/dev/null | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//' | cut -c1-30)
-        BRANCH_NAME="fix/${ISSUE_NUMBER}-${SLUG}"
-        git checkout -b "$BRANCH_NAME"
-        lichyflow set value branch_name "$BRANCH_NAME"
-      timeout: 30
-
     - name: fetch_issue
       type: bash
-      command: |
-        ISSUE_NUMBER="$ISSUE_NUMBER"
-        gh issue view "$ISSUE_NUMBER" --json title,body,labels > "$ARTIFACT_DIR/issue.json" 2>&1
-        if [ $? -eq 0 ]; then
-          lichyflow set flag issue_fetched
-        else
-          lichyflow unset flag issue_fetched
-        fi
+      command: bash "$PIPELINE_DIR/ci/fetch_issue.sh"
       retry:
         max: 2
         backoff: exponential
         initial_delay: 3s
       timeout: 30
 
+    - name: create_branch
+      type: bash
+      command: bash "$PIPELINE_DIR/ci/create_branch.sh"
+      timeout: 30
+
     - name: llm_fix
       type: bash
-      command: |
-        pi-stream --session "$ARTIFACT_DIR/pi-session.jsonl" --model go-extra/deepseek-v4-flash --thinking high -t read,edit,write,bash,grep,find,ls "You are fixing issue #$ISSUE_NUMBER in lichyflow (Go project). Read the issue from $ARTIFACT_DIR/issue.json. Analyze the code and make necessary changes. Run tests to verify. Use bash and edit tools."
+      command: bash "$PIPELINE_DIR/ci/llm_fix.sh"
+      retry:
+        max: 1
+        backoff: exponential
+        initial_delay: 10s
       timeout: 600
 
     - name: run_tests
       type: bash
-      command: |
-        CURRENT=$(lichyflow get value test_loop)
-        NEW=$((CURRENT + 1))
-        lichyflow set value test_loop "$NEW"
-
-        if [ "$NEW" -gt 3 ]; then
-          echo "Test loop exceeded 3 iterations, giving up."
-          lichyflow unset flag tests_passed
-          exit 1
-        fi
-
-        echo "Test loop iteration $NEW"
-        go test ./... -v -count=1 2>&1 | tee "$ARTIFACT_DIR/test-results.txt" || true
-        EXIT_CODE=${PIPESTATUS[0]}
-
-        if [ $EXIT_CODE -eq 0 ]; then
-          lichyflow set flag tests_passed
-          echo "All tests passed."
-        else
-          lichyflow unset flag tests_passed
-          grep -A 5 "FAIL\|ERROR\|panic" "$ARTIFACT_DIR/test-results.txt" > "$ARTIFACT_DIR/test-failures.txt" 2>/dev/null || true
-          echo "Tests failed. Loop iteration $NEW/3."
-        fi
+      command: bash "$PIPELINE_DIR/ci/run_tests.sh"
       timeout: 300
 
     - name: prepare_review
       type: bash
-      command: |
-        rm -f "$ARTIFACT_DIR/cr-issues.md"
+      command: bash "$PIPELINE_DIR/ci/prepare_review.sh"
       timeout: 10
 
     - name: code_review
       type: bash
-      command: |
-        pi-stream --session "$ARTIFACT_DIR/pi-review-session.jsonl" --model go-extra/deepseek-v4-flash --thinking high -t read,bash,grep,find,ls "Review the code changes in this Go project (lichyflow). If you find bugs, style issues, or security problems, write them to $ARTIFACT_DIR/cr-issues.md. If everything looks good, don't create that file."
+      command: bash "$PIPELINE_DIR/ci/code_review.sh"
+      retry:
+        max: 1
+        backoff: exponential
+        initial_delay: 10s
       timeout: 300
 
     - name: check_review
       type: bash
-      command: |
-        if [ -s "$ARTIFACT_DIR/cr-issues.md" ]; then
-          ISSUES=$(cat "$ARTIFACT_DIR/cr-issues.md")
-          echo "Code review found issues:"
-          echo "$ISSUES"
-          lichyflow set flag cr_issues_found
-        else
-          echo "Code review clean — no issues found."
-          lichyflow unset flag cr_issues_found
-        fi
+      command: bash "$PIPELINE_DIR/ci/check_review.sh"
       timeout: 10
 
     - name: commit_push
       type: bash
-      command: |
-        git add -A
-        ISSUE_NUMBER="$ISSUE_NUMBER"
-        git commit -m "fix: issue #$ISSUE_NUMBER" --allow-empty
-        BRANCH_NAME=$(lichyflow get value branch_name)
-        git push origin "$BRANCH_NAME"
-        if [ $? -eq 0 ]; then
-          lichyflow set flag pushed
-        else
-          lichyflow unset flag pushed
-        fi
+      command: bash "$PIPELINE_DIR/ci/commit_push.sh"
+      retry:
+        max: 1
+        backoff: fixed
+        initial_delay: 10s
       timeout: 60
 
     - name: create_pr
       type: bash
-      command: |
-        ISSUE_NUMBER="$ISSUE_NUMBER"
-        BRANCH_NAME=$(lichyflow get value branch_name)
-        DEFAULT_BRANCH=$(lichyflow get value default_branch)
-        PR_URL=$(gh pr create \
-          --base "$DEFAULT_BRANCH" \
-          --head "$BRANCH_NAME" \
-          --title "fix: issue #$ISSUE_NUMBER" \
-          --body "Fixes #$ISSUE_NUMBER" \
-          2>&1)
-        if [ $? -eq 0 ]; then
-          echo "$PR_URL" > "$ARTIFACT_DIR/pr-url"
-          lichyflow set flag pr_created
-        else
-          lichyflow unset flag pr_created
-        fi
+      command: bash "$PIPELINE_DIR/ci/create_pr.sh"
       retry:
         max: 2
         backoff: exponential
@@ -173,71 +108,64 @@ pipeline:
 
     - name: wait_ci
       type: bash
-      command: |
-        BRANCH_NAME=$(lichyflow get value branch_name)
-        for i in $(seq 1 20); do
-          STATUS=$(gh run list --branch "$BRANCH_NAME" --limit 1 --json conclusion 2>&1)
-          if echo "$STATUS" | grep -q '"conclusion":"success"'; then
-            lichyflow set flag ci_passed
-            exit 0
-          elif echo "$STATUS" | grep -q '"conclusion":"failure"'; then
-            lichyflow unset flag ci_passed
-            exit 1
-          fi
-          sleep 20
-        done
-        lichyflow unset flag ci_passed
-        exit 1
+      command: bash "$PIPELINE_DIR/ci/wait_ci.sh"
       timeout: 600
 
     - name: merge_pr
       type: bash
-      command: |
-        PR_URL=$(cat "$ARTIFACT_DIR/pr-url")
-        PR_NUMBER=$(echo "$PR_URL" | grep -o '[0-9]*$')
-        gh pr merge "$PR_NUMBER" --squash
-        if [ $? -eq 0 ]; then
-          lichyflow set flag pr_merged
-        else
-          lichyflow unset flag pr_merged
-        fi
+      command: bash "$PIPELINE_DIR/ci/merge_pr.sh"
       timeout: 60
 
     - name: close_issue
       type: bash
-      command: |
-        ISSUE_NUMBER="$ISSUE_NUMBER"
-        PR_URL=$(cat "$ARTIFACT_DIR/pr-url")
-        PR_NUMBER=$(echo "$PR_URL" | grep -o '[0-9]*$')
-        gh issue close "$ISSUE_NUMBER" --comment "Fixed in #$PR_NUMBER"
+      command: bash "$PIPELINE_DIR/ci/close_issue.sh"
       timeout: 30
 
     - name: cleanup
       type: bash
-      command: |
-        DEFAULT_BRANCH=$(lichyflow get value default_branch)
-        BRANCH_NAME=$(lichyflow get value branch_name)
-        git checkout "$DEFAULT_BRANCH"
-        git branch -D "$BRANCH_NAME"
-        git push origin --delete "$BRANCH_NAME" 2>/dev/null || true
-        git pull origin "$DEFAULT_BRANCH"
+      command: bash "$PIPELINE_DIR/ci/cleanup.sh"
       timeout: 60
 
   transitions:
+    # setup → fetch issue
     - event: next
       src: setup_repo
+      dst: fetch_issue
+
+    # fetch issue → create branch (or no_issues exit)
+    - event: fetch_ok
+      src: fetch_issue
       dst: create_branch
+      condition:
+        flag: issue_fetched
+    - event: fetch_fail
+      src: fetch_issue
+      dst: no_issues
+      condition:
+        flag: issue_fetched
+        negate: true
+
+    # create branch → llm fix
     - event: next
       src: create_branch
-      dst: fetch_issue
-    - event: next
-      src: fetch_issue
       dst: llm_fix
+
+    # llm fix → run tests
     - event: next
       src: llm_fix
       dst: run_tests
 
-    # Tests: pass → review, fail → back to llm_fix (loop)
+    # Tests: build fail → exit, exhausted → exit, pass → review, fail → llm_fix
+    - event: build_fail
+      src: run_tests
+      dst: build_failed
+      condition:
+        flag: build_failed
+    - event: tests_exhausted
+      src: run_tests
+      dst: loop_exhausted
+      condition:
+        flag: loop_exhausted
     - event: tests_ok
       src: run_tests
       dst: prepare_review
@@ -258,7 +186,12 @@ pipeline:
       src: code_review
       dst: check_review
 
-    # Review found issues → back to llm_fix
+    # Review: exhausted → exit, issues → back to llm_fix, clean → commit
+    - event: review_exhausted
+      src: check_review
+      dst: loop_exhausted
+      condition:
+        flag: loop_exhausted
     - event: review_issues
       src: check_review
       dst: llm_fix
@@ -271,6 +204,7 @@ pipeline:
         flag: cr_issues_found
         negate: true
 
+    # Commit → PR → CI
     - event: next
       src: commit_push
       dst: create_pr
@@ -291,6 +225,7 @@ pipeline:
         flag: ci_passed
         negate: true
 
+    # Merge → close → cleanup → done
     - event: next
       src: merge_pr
       dst: close_issue

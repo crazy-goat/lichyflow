@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -123,13 +124,29 @@ func resolveSessionID() string {
 }
 
 func resolveStoreDir() string {
-	if storeDir != ".lichyflow" {
-		return storeDir
+	dir := storeDir
+	if dir == ".lichyflow" {
+		if env := os.Getenv("LICHYFLOW_STORE"); env != "" {
+			dir = env
+		} else {
+			home, err := os.UserHomeDir()
+			if err == nil {
+				dir = filepath.Join(home, ".lichyflow")
+			}
+		}
 	}
-	if env := os.Getenv("LICHYFLOW_STORE"); env != "" {
-		return env
+	// Expand ~ and resolve to absolute path
+	if strings.HasPrefix(dir, "~/") {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			dir = filepath.Join(home, dir[2:])
+		}
 	}
-	return ".lichyflow"
+	abs, err := filepath.Abs(dir)
+	if err == nil {
+		return abs
+	}
+	return dir
 }
 
 // loadEnvFile reads a .env file and sets each line as OS environment variable.
@@ -187,14 +204,22 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 		os.Setenv(key, val)
 	}
 
+	// Resolve pipeline directory (for ci/ scripts relative to YAML)
+	absPipeline, err := filepath.Abs(pipelineFile)
+	if err == nil {
+		os.Setenv("LICHYFLOW_PIPELINE_DIR", filepath.Dir(absPipeline))
+	}
+
 	// Load pipeline
 	p, err := pipeline.LoadFromFile(pipelineFile)
 	if err != nil {
 		return fmt.Errorf("load pipeline: %w", err)
 	}
 
-	// Create session store
-	store := session.NewStore(resolveStoreDir())
+	// Create session store (resolved to absolute path)
+	storeDir := resolveStoreDir()
+	os.Setenv("LICHYFLOW_STORE", storeDir)
+	store := session.NewStore(storeDir)
 
 	// Visualize mode
 	if visualize {

@@ -209,6 +209,7 @@ func (s *Store) EnvVars(sessionID, pipelineName, currentState string) map[string
 		"LICHYFLOW_ARTIFACT_DIR": sessionDir,
 		"LICHYFLOW_FLAGS_DIR":    filepath.Join(sessionDir, "flags"),
 		"LICHYFLOW_VALUES_DIR":   filepath.Join(sessionDir, "values"),
+		"LICHYFLOW_PIPELINE_DIR": os.Getenv("LICHYFLOW_PIPELINE_DIR"),
 	}
 	// Add short aliases (without LICHYFLOW_ prefix)
 	for k, v := range vars {

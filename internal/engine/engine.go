@@ -90,6 +90,12 @@ func (e *Engine) Run(ctx context.Context) (int, error) {
 
 		// Transition to next state
 		current = next
+
+		// Reload state from disk — subprocesses (lichyflow set value/flag)
+		// may have modified flags/values/artifacts during the step.
+		if reloaded, err := e.store.Load(state.SessionID); err == nil {
+			state = reloaded
+		}
 		state.CurrentState = current
 		if err := e.store.Save(state); err != nil {
 			return e.pipeline.GetExitCode("failed"), fmt.Errorf("save state: %w", err)
