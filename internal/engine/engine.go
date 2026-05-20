@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"strconv"
 	"time"
 
 	"github.com/looplab/fsm"
@@ -210,10 +211,18 @@ func (e *Engine) evaluateCondition(state *session.State, cond *pipeline.Conditio
 	if cond.Value != "" {
 		v, _ := e.store.GetValue(state.SessionID, cond.Value)
 		switch {
-		case cond.Greater != "" && v > cond.Greater:
-			result = true
-		case cond.Less != "" && v < cond.Less:
-			result = true
+		case cond.Greater != "":
+			vInt, errV := strconv.Atoi(v)
+			condInt, errC := strconv.Atoi(cond.Greater)
+			if errV == nil && errC == nil {
+				result = vInt > condInt
+			}
+		case cond.Less != "":
+			vInt, errV := strconv.Atoi(v)
+			condInt, errC := strconv.Atoi(cond.Less)
+			if errV == nil && errC == nil {
+				result = vInt < condInt
+			}
 		case cond.Equal != "" && v == cond.Equal:
 			result = true
 		}
