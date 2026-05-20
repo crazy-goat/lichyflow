@@ -114,9 +114,13 @@ func (s *Store) SetFlag(sessionID, name string, value bool) error {
 	// Also write to a file for shell access
 	flagDir := filepath.Join(s.sessionDir(sessionID), "flags")
 	if value {
-		os.WriteFile(filepath.Join(flagDir, name), []byte("1"), 0644)
+		if err := os.WriteFile(filepath.Join(flagDir, name), []byte("1"), 0644); err != nil {
+			return err
+		}
 	} else {
-		os.Remove(filepath.Join(flagDir, name))
+		if err := os.Remove(filepath.Join(flagDir, name)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
 	return s.Save(state)
 }
@@ -143,7 +147,9 @@ func (s *Store) SetValue(sessionID, name, value string) error {
 	state.Values[name] = value
 	// Also write to a file for shell access
 	valDir := filepath.Join(s.sessionDir(sessionID), "values")
-	os.WriteFile(filepath.Join(valDir, name), []byte(value), 0644)
+	if err := os.WriteFile(filepath.Join(valDir, name), []byte(value), 0644); err != nil {
+		return err
+	}
 	return s.Save(state)
 }
 

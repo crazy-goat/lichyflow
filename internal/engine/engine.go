@@ -62,7 +62,9 @@ func (e *Engine) Run(ctx context.Context) (int, error) {
 			exitCode := e.pipeline.GetExitCode(current)
 			state.Exited = true
 			state.ExitCode = exitCode
-			e.store.Save(state)
+			if err := e.store.Save(state); err != nil {
+				return exitCode, fmt.Errorf("save state: %w", err)
+			}
 			log.Printf("[%s] Pipeline exited at %q with code %d", state.SessionID, current, exitCode)
 			return exitCode, nil
 		}
