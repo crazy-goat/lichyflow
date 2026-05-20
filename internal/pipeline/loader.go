@@ -59,6 +59,35 @@ func (p *Pipeline) Validate() error {
 		}
 	}
 
+	// Check transition conditions
+	for _, t := range p.Transitions {
+		if t.Condition == nil {
+			continue
+		}
+		// Flag and Value should not both be set (unclear semantics)
+		if t.Condition.Flag != "" && t.Condition.Value != "" {
+			return fmt.Errorf("transition %q: condition has both flag and value set, only one allowed", t.Event)
+		}
+		// Count comparison fields
+		cmpCount := 0
+		if t.Condition.Greater != "" {
+			cmpCount++
+		}
+		if t.Condition.Less != "" {
+			cmpCount++
+		}
+		if t.Condition.Equal != "" {
+			cmpCount++
+		}
+		if cmpCount > 1 {
+			return fmt.Errorf("transition %q: condition has multiple comparison fields (greater/less/equal), only one allowed", t.Event)
+		}
+		// Greater/Less/Equal require a Value to be meaningful
+		if cmpCount > 0 && t.Condition.Value == "" {
+			return fmt.Errorf("transition %q: condition uses greater/less/equal but has no value field", t.Event)
+		}
+	}
+
 	// Check for duplicate step names
 	names := map[string]bool{}
 	for _, s := range p.Steps {

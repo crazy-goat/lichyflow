@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 )
+
+var validSessionID = regexp.MustCompile(`^[a-f0-9]+$`)
 
 // Store manages session state on disk.
 type Store struct {
@@ -73,6 +76,9 @@ func (s *Store) NewSession(pipelineName, startState string) (*State, error) {
 
 // Load reads an existing session from disk.
 func (s *Store) Load(sessionID string) (*State, error) {
+	if err := s.validateID(sessionID); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -106,27 +112,31 @@ func (s *Store) save(state *State) error {
 
 // SetFlag sets a boolean flag in the session.
 func (s *Store) SetFlag(sessionID, name string, value bool) error {
-	state, err := s.Load(sessionID)
-	if err != nil {
+	if err := s.validateID(sessionID); err != nil {
 		return err
 	}
-	state.Flags[name] = value
-	// Also write to a file for shell access
-	flagDir := filepath.Join(s.sessionDir(sessionID), "flags")
-	if value {
-		if err := os.WriteFile(filepath.Join(flagDir, name), []byte("1"), 0644); err != nil {
-			return err
+	return s.readModifyWrite(sessionID, func(state *State) error {
+		state.Flags[name] = value
+		// Also write to a file for shell access
+		flagDir := filepath.Join(s.sessionDir(sessionID), "flags")
+		if value {
+			if err := os.WriteFile(filepath.Join(flagDir, name), []byte("1"), 0644); err != nil {
+				return err
+			}
+		} else {
+			if err := os.Remove(filepath.Join(flagDir, name)); err != nil && !os.IsNotExist(err) {
+				return err
+			}
 		}
-	} else {
-		if err := os.Remove(filepath.Join(flagDir, name)); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	}
-	return s.Save(state)
+		return nil
+	})
 }
 
 // GetFlag reads a boolean flag from the session.
 func (s *Store) GetFlag(sessionID, name string) (bool, error) {
+	if err := s.validateID(sessionID); err != nil {
+		return false, err
+	}
 	state, err := s.Load(sessionID)
 	if err != nil {
 		return false, err
@@ -140,21 +150,25 @@ func (s *Store) GetFlag(sessionID, name string) (bool, error) {
 
 // SetValue sets a string value in the session.
 func (s *Store) SetValue(sessionID, name, value string) error {
-	state, err := s.Load(sessionID)
-	if err != nil {
+	if err := s.validateID(sessionID); err != nil {
 		return err
 	}
-	state.Values[name] = value
-	// Also write to a file for shell access
-	valDir := filepath.Join(s.sessionDir(sessionID), "values")
-	if err := os.WriteFile(filepath.Join(valDir, name), []byte(value), 0644); err != nil {
-		return err
-	}
-	return s.Save(state)
+	return s.readModifyWrite(sessionID, func(state *State) error {
+		state.Values[name] = value
+		// Also write to a file for shell access
+		valDir := filepath.Join(s.sessionDir(sessionID), "values")
+		if err := os.WriteFile(filepath.Join(valDir, name), []byte(value), 0644); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 // GetValue reads a string value from the session.
 func (s *Store) GetValue(sessionID, name string) (string, error) {
+	if err := s.validateID(sessionID); err != nil {
+		return "", err
+	}
 	state, err := s.Load(sessionID)
 	if err != nil {
 		return "", err
@@ -168,27 +182,36 @@ func (s *Store) GetValue(sessionID, name string) (string, error) {
 
 // SetArtifact registers an artifact path in the session.
 func (s *Store) SetArtifact(sessionID, name, path string) error {
-	state, err := s.Load(sessionID)
-	if err != nil {
+	if err := s.validateID(sessionID); err != nil {
 		return err
 	}
-	state.Artifacts[name] = path
-	return s.Save(state)
+	return s.readModifyWrite(sessionID, func(state *State) error {
+		state.Artifacts[name] = path
+		return nil
+	})
 }
 
 // IncrementRetry increments the retry counter for a step.
 func (s *Store) IncrementRetry(sessionID, stepName string) (int, error) {
-	state, err := s.Load(sessionID)
-	if err != nil {
+	if err := s.validateID(sessionID); err != nil {
 		return 0, err
 	}
-	state.RetryCount[stepName]++
-	count := state.RetryCount[stepName]
-	return count, s.Save(state)
+	var count int
+	if err := s.readModifyWrite(sessionID, func(state *State) error {
+		state.RetryCount[stepName]++
+		count = state.RetryCount[stepName]
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 // GetRetryCount returns the current retry count for a step.
 func (s *Store) GetRetryCount(sessionID, stepName string) (int, error) {
+	if err := s.validateID(sessionID); err != nil {
+		return 0, err
+	}
 	state, err := s.Load(sessionID)
 	if err != nil {
 		return 0, err
@@ -200,6 +223,10 @@ func (s *Store) GetRetryCount(sessionID, stepName string) (int, error) {
 // Each variable is exported both with and without the LICHYFLOW_ prefix
 // for convenience (e.g. LICHYFLOW_ARTIFACT_DIR and ARTIFACT_DIR).
 func (s *Store) EnvVars(sessionID, pipelineName, currentState string) map[string]string {
+	if err := s.validateID(sessionID); err != nil {
+		// Return empty map so callers don't get poisoned paths
+		return map[string]string{}
+	}
 	sessionDir := s.sessionDir(sessionID)
 	vars := map[string]string{
 		"LICHYFLOW_SESSION_ID":    sessionID,
@@ -216,6 +243,43 @@ func (s *Store) EnvVars(sessionID, pipelineName, currentState string) map[string
 		vars[alias] = v
 	}
 	return vars
+}
+
+func (s *Store) validateID(id string) error {
+	if !validSessionID.MatchString(id) {
+		return fmt.Errorf("invalid session ID: %q must be hex-only", id)
+	}
+	return nil
+}
+
+// readModifyWrite acquires the write lock, loads state, calls the modifier function,
+// saves the state, and releases the lock. This prevents TOCTOU races.
+func (s *Store) readModifyWrite(sessionID string, modifier func(*State) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, err := s.loadInternal(sessionID)
+	if err != nil {
+		return err
+	}
+	if err := modifier(state); err != nil {
+		return err
+	}
+	return s.save(state)
+}
+
+// loadInternal loads state without acquiring a lock (caller must hold mu).
+func (s *Store) loadInternal(sessionID string) (*State, error) {
+	path := s.statePath(sessionID)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read session state: %w", err)
+	}
+	var state State
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, fmt.Errorf("parse session state: %w", err)
+	}
+	return &state, nil
 }
 
 func (s *Store) sessionDir(id string) string {
