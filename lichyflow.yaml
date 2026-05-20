@@ -52,7 +52,12 @@ pipeline:
         DEFAULT_BRANCH=$(lichyflow get value default_branch)
         ISSUE_NUMBER="$ISSUE_NUMBER"
         SLUG=$(gh issue view "$ISSUE_NUMBER" --json title -q '.title' 2>/dev/null | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//' | cut -c1-30)
-        BRANCH_NAME="fix/${ISSUE_NUMBER}-${SLUG}"
+        # Fallback to issue number if slug is empty
+        if [ -z "$SLUG" ]; then
+          BRANCH_NAME="fix/${ISSUE_NUMBER}"
+        else
+          BRANCH_NAME="fix/${ISSUE_NUMBER}-${SLUG}"
+        fi
         git checkout -b "$BRANCH_NAME"
         lichyflow set value branch_name "$BRANCH_NAME"
       timeout: 30
@@ -61,7 +66,7 @@ pipeline:
       type: bash
       command: |
         ISSUE_NUMBER="$ISSUE_NUMBER"
-        gh issue view "$ISSUE_NUMBER" --json title,body,labels > "$ARTIFACT_DIR/issue.json" 2>&1
+        gh issue view "$ISSUE_NUMBER" --json title,body,labels > "$ARTIFACT_DIR/issue.json" 2>/dev/null
         if [ $? -eq 0 ]; then
           lichyflow set flag issue_fetched
         else
@@ -176,11 +181,11 @@ pipeline:
       command: |
         BRANCH_NAME=$(lichyflow get value branch_name)
         for i in $(seq 1 20); do
-          STATUS=$(gh run list --branch "$BRANCH_NAME" --limit 1 --json conclusion 2>&1)
-          if echo "$STATUS" | grep -q '"conclusion":"success"'; then
+          CONCLUSION=$(gh run list --branch "$BRANCH_NAME" --commit HEAD --json conclusion --jq '.[0].conclusion' 2>/dev/null)
+          if [ "$CONCLUSION" = "success" ]; then
             lichyflow set flag ci_passed
             exit 0
-          elif echo "$STATUS" | grep -q '"conclusion":"failure"'; then
+          elif [ "$CONCLUSION" = "failure" ]; then
             lichyflow unset flag ci_passed
             exit 1
           fi

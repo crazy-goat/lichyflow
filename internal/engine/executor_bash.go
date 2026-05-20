@@ -40,7 +40,7 @@ func (b *BashExecutor) Run(ctx context.Context, state *session.State, step *pipe
 	defer cancel()
 
 	// Execute the command with process group isolation
-		cmd := exec.CommandContext(ctx, "bash", "-e", "-c", step.Command)
+	cmd := exec.CommandContext(ctx, "bash", "-e", "-c", step.Command)
 	cmd.Env = append(os.Environ(), envToSlice(env)...)
 	// Run in current working directory (where lichyflow was invoked)
 
@@ -51,7 +51,9 @@ func (b *BashExecutor) Run(ctx context.Context, state *session.State, step *pipe
 		if cmd.Process != nil && cmd.Process.Pid > 0 {
 			pgid, err := syscall.Getpgid(cmd.Process.Pid)
 			if err == nil && pgid > 0 {
-				_ = syscall.Kill(-pgid, syscall.SIGKILL)
+				if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil {
+					log.Printf("[%s] failed to kill process group %d: %v", state.SessionID, pgid, err)
+				}
 			}
 		}
 		return nil
@@ -97,7 +99,10 @@ func (b *BashExecutor) buildEnv(state *session.State, step *pipeline.Step) map[s
 	env := b.store.EnvVars(state.SessionID, state.PipelineName, state.CurrentState)
 
 	// Add declared retry count
-	retryCount, _ := b.store.GetRetryCount(state.SessionID, step.Name)
+	retryCount, err := b.store.GetRetryCount(state.SessionID, step.Name)
+	if err != nil {
+		log.Printf("[%s] failed to get retry count for step %q: %v", state.SessionID, step.Name, err)
+	}
 	env["LICHYFLOW_RETRY_COUNT"] = fmt.Sprintf("%d", retryCount)
 	env["RETRY_COUNT"] = fmt.Sprintf("%d", retryCount)
 
@@ -132,7 +137,9 @@ func (p *prefixWriter) Write(buf []byte) (int, error) {
 	var written int
 	for len(buf) > 0 {
 		if p.bol {
-			if _, err := p.w.Write([]byte(p.prefix)); err != nil {
+			n, err := writeFull(p.w, []byte(p.prefix))
+			written += n
+			if err != nil {
 				return written, err
 			}
 			p.bol = false
@@ -140,7 +147,7 @@ func (p *prefixWriter) Write(buf []byte) (int, error) {
 		// Find next newline
 		i := bytes.IndexByte(buf, '\n')
 		if i == -1 {
-			n, err := p.w.Write(buf)
+			n, err := writeFull(p.w, buf)
 			written += n
 			if err != nil {
 				return written, err
@@ -148,7 +155,7 @@ func (p *prefixWriter) Write(buf []byte) (int, error) {
 			return written, nil
 		}
 		// Write up to and including newline
-		n, err := p.w.Write(buf[:i+1])
+		n, err := writeFull(p.w, buf[:i+1])
 		written += n
 		if err != nil {
 			return written, err
@@ -157,4 +164,20 @@ func (p *prefixWriter) Write(buf []byte) (int, error) {
 		p.bol = true
 	}
 	return written, nil
+}
+
+// writeFull writes len(buf) bytes to w, retrying on short writes.
+// This satisfies the io.Writer contract by ensuring either all bytes are
+// written or an error is returned.
+func writeFull(w io.Writer, buf []byte) (int, error) {
+	var total int
+	for len(buf) > 0 {
+		n, err := w.Write(buf)
+		total += n
+		buf = buf[n:]
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
 }

@@ -2,9 +2,11 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os/exec"
+	"strconv"
 	"time"
 
 	"github.com/looplab/fsm"
@@ -123,7 +125,9 @@ func (e *Engine) executeStepWithRetries(ctx context.Context, state *session.Stat
 
 		if attempt < maxRetry {
 			// Record retry count
-			_, _ = e.store.IncrementRetry(state.SessionID, step.Name)
+			if _, err := e.store.IncrementRetry(state.SessionID, step.Name); err != nil {
+				log.Printf("[%s] failed to increment retry count for step %q: %v", state.SessionID, step.Name, err)
+			}
 		}
 	}
 
@@ -203,19 +207,64 @@ func (e *Engine) evaluateCondition(state *session.State, cond *pipeline.Conditio
 	result := false
 
 	if cond.Flag != "" {
-		v, _ := e.store.GetFlag(state.SessionID, cond.Flag)
+		v, err := e.store.GetFlag(state.SessionID, cond.Flag)
+		if err != nil {
+			log.Printf("[%s] evaluateCondition: failed to get flag %q: %v", state.SessionID, cond.Flag, err)
+		}
 		result = v
 	}
 
 	if cond.Value != "" {
-		v, _ := e.store.GetValue(state.SessionID, cond.Value)
-		switch {
-		case cond.Greater != "" && v > cond.Greater:
-			result = true
-		case cond.Less != "" && v < cond.Less:
-			result = true
-		case cond.Equal != "" && v == cond.Equal:
-			result = true
+		v, err := e.store.GetValue(state.SessionID, cond.Value)
+		if err != nil {
+			log.Printf("[%s] evaluateCondition: failed to get value %q: %v", state.SessionID, cond.Value, err)
+			result = false
+		} else {
+			// Count how many comparison fields are set to warn about overlapping conditions
+			setCount := 0
+			if cond.Greater != "" {
+				setCount++
+			}
+			if cond.Less != "" {
+				setCount++
+			}
+			if cond.Equal != "" {
+				setCount++
+			}
+			if setCount > 1 {
+				log.Printf("[%s] evaluateCondition: warning — multiple comparison fields set on condition (greater=%q, less=%q, equal=%q), only first will be evaluated", state.SessionID, cond.Greater, cond.Less, cond.Equal)
+			}
+
+			switch {
+			case cond.Greater != "":
+				vInt, errV := strconv.Atoi(v)
+				condInt, errC := strconv.Atoi(cond.Greater)
+				if errV == nil && errC == nil {
+					result = vInt > condInt
+				} else {
+					log.Printf("[%s] evaluateCondition: cannot parse numeric comparison for greater: value=%q, greater=%q (errV=%v, errC=%v)", state.SessionID, v, cond.Greater, errV, errC)
+					result = false
+				}
+			case cond.Less != "":
+				vInt, errV := strconv.Atoi(v)
+				condInt, errC := strconv.Atoi(cond.Less)
+				if errV == nil && errC == nil {
+					result = vInt < condInt
+				} else {
+					log.Printf("[%s] evaluateCondition: cannot parse numeric comparison for less: value=%q, less=%q (errV=%v, errC=%v)", state.SessionID, v, cond.Less, errV, errC)
+					result = false
+				}
+			case cond.Equal != "":
+				// Try integer comparison first for consistency with Greater/Less
+				if vInt, errV := strconv.Atoi(v); errV == nil {
+					if condInt, errC := strconv.Atoi(cond.Equal); errC == nil {
+						result = vInt == condInt
+						break
+					}
+				}
+				// Fall back to string comparison if either side is non-numeric
+				result = v == cond.Equal
+			}
 		}
 	}
 
@@ -275,7 +324,7 @@ func (e *Engine) checkRequirements() error {
 			if req.Hint != "" {
 				msg += "\n  hint: " + req.Hint
 			}
-			return fmt.Errorf("%s", msg)
+			return errors.New(msg)
 		}
 		log.Printf("[requirements] \u2713 %s", label)
 	}
@@ -331,7 +380,10 @@ func (e *Engine) buildFSM(state *session.State) *fsm.FSM {
 // Visualize returns a Mermaid diagram of the pipeline.
 func (e *Engine) Visualize() (string, error) {
 	if e.fsm == nil {
-		state, _ := e.store.NewSession("_viz", e.pipeline.Start)
+		state, err := e.store.NewSession("_viz", e.pipeline.Start)
+		if err != nil {
+			return "", fmt.Errorf("create viz session: %w", err)
+		}
 		e.fsm = e.buildFSM(state)
 	}
 	result, err := fsm.VisualizeForMermaidWithGraphType(e.fsm, fsm.StateDiagram)
