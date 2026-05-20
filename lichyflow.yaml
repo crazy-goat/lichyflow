@@ -34,7 +34,7 @@ pipeline:
   steps:
     - name: setup_repo
       type: bash
-      command: bash ci/setup_repo.sh
+      command: bash "$PIPELINE_DIR/ci/setup_repo.sh"
       retry:
         max: 2
         backoff: exponential
@@ -43,7 +43,7 @@ pipeline:
 
     - name: fetch_issue
       type: bash
-      command: bash ci/fetch_issue.sh
+      command: bash "$PIPELINE_DIR/ci/fetch_issue.sh"
       retry:
         max: 2
         backoff: exponential
@@ -52,12 +52,12 @@ pipeline:
 
     - name: create_branch
       type: bash
-      command: bash ci/create_branch.sh
+      command: bash "$PIPELINE_DIR/ci/create_branch.sh"
       timeout: 30
 
     - name: llm_fix
       type: bash
-      command: bash ci/llm_fix.sh
+      command: bash "$PIPELINE_DIR/ci/llm_fix.sh"
       retry:
         max: 1
         backoff: exponential
@@ -66,17 +66,17 @@ pipeline:
 
     - name: run_tests
       type: bash
-      command: bash ci/run_tests.sh
+      command: bash "$PIPELINE_DIR/ci/run_tests.sh"
       timeout: 300
 
     - name: prepare_review
       type: bash
-      command: bash ci/prepare_review.sh
+      command: bash "$PIPELINE_DIR/ci/prepare_review.sh"
       timeout: 10
 
     - name: code_review
       type: bash
-      command: bash ci/code_review.sh
+      command: bash "$PIPELINE_DIR/ci/code_review.sh"
       retry:
         max: 1
         backoff: exponential
@@ -85,12 +85,12 @@ pipeline:
 
     - name: check_review
       type: bash
-      command: bash ci/check_review.sh
+      command: bash "$PIPELINE_DIR/ci/check_review.sh"
       timeout: 10
 
     - name: commit_push
       type: bash
-      command: bash ci/commit_push.sh
+      command: bash "$PIPELINE_DIR/ci/commit_push.sh"
       retry:
         max: 1
         backoff: fixed
@@ -99,7 +99,7 @@ pipeline:
 
     - name: create_pr
       type: bash
-      command: bash ci/create_pr.sh
+      command: bash "$PIPELINE_DIR/ci/create_pr.sh"
       retry:
         max: 2
         backoff: exponential
@@ -108,22 +108,22 @@ pipeline:
 
     - name: wait_ci
       type: bash
-      command: bash ci/wait_ci.sh
+      command: bash "$PIPELINE_DIR/ci/wait_ci.sh"
       timeout: 600
 
     - name: merge_pr
       type: bash
-      command: bash ci/merge_pr.sh
+      command: bash "$PIPELINE_DIR/ci/merge_pr.sh"
       timeout: 60
 
     - name: close_issue
       type: bash
-      command: bash ci/close_issue.sh
+      command: bash "$PIPELINE_DIR/ci/close_issue.sh"
       timeout: 30
 
     - name: cleanup
       type: bash
-      command: bash ci/cleanup.sh
+      command: bash "$PIPELINE_DIR/ci/cleanup.sh"
       timeout: 60
 
   transitions:

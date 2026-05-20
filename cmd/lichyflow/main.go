@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -185,6 +186,12 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("invalid --env format: %q (expected VAR=val)", e)
 		}
 		os.Setenv(key, val)
+	}
+
+	// Resolve pipeline directory (for ci/ scripts relative to YAML)
+	absPipeline, err := filepath.Abs(pipelineFile)
+	if err == nil {
+		os.Setenv("LICHYFLOW_PIPELINE_DIR", filepath.Dir(absPipeline))
 	}
 
 	// Load pipeline
