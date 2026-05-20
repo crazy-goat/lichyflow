@@ -1,0 +1,14 @@
+# Binaries
+lichyflow
+pi-stream
+
+# Session store
+.lichyflow/
+
+# Env files
+.env.lichyflow
+.env
+
+# IDE
+.idea/
+.vscode/
