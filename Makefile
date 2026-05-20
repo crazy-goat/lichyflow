@@ -1,12 +1,10 @@
-.PHONY: build test clean install lint examples stream
+.PHONY: build test clean install lint examples
 
 BINARY=lichyflow
-STREAM_BINARY=pi-stream
 GO=go
 
 build:
 	$(GO) build -o $(BINARY) ./cmd/lichyflow/
-	$(GO) build -o $(STREAM_BINARY) ./cmd/pi-stream/
 
 test:
 	$(GO) test ./... -v
@@ -16,10 +14,13 @@ clean:
 	rm -rf .lichyflow/
 
 install: build
-	cp $(BINARY) $(STREAM_BINARY) /usr/local/bin/
+	cp $(BINARY) /usr/local/bin/
 
 lint:
 	$(GO) vet ./...
+
+golangci-lint:
+	golangci-lint run ./... --timeout=5m
 
 examples: build
 	@echo "=== Example 1: simple-ci ==="
