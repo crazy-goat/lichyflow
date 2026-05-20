@@ -7,19 +7,52 @@ MODEL="${LLM_MODEL:-go-extra/deepseek-v4-flash}"
 THINKING="${LLM_THINKING:-high}"
 
 # ═══════════════════════════════════════════════════════════════════════
+# Build prompt — include feedback from previous failures
+# ═══════════════════════════════════════════════════════════════════════
+PROMPT="You are fixing issue #$ISSUE_NUMBER in lichyflow (Go project)."
+
+if [ -s "$ARTIFACT_DIR/issue.json" ]; then
+  PROMPT="$PROMPT
+
+Read the issue details from $ARTIFACT_DIR/issue.json."
+fi
+
+if [ -s "$ARTIFACT_DIR/test-failures.txt" ]; then
+  PROMPT="$PROMPT
+
+The PREVIOUS test run FAILED with these errors. Focus on fixing them:
+\`\`\`
+$(cat "$ARTIFACT_DIR/test-failures.txt")
+\`\`\`"
+fi
+
+if [ -s "$ARTIFACT_DIR/cr-issues.md" ]; then
+  PROMPT="$PROMPT
+
+The CODE REVIEW found these issues that MUST be addressed:
+\`\`\`
+$(cat "$ARTIFACT_DIR/cr-issues.md")
+\`\`\`"
+fi
+
+PROMPT="$PROMPT
+
+Analyze the code, make necessary changes, and run tests to verify.
+When tests pass, stage the changed files (git add) and commit them
+with a descriptive message. Use bash for go test, git add, git commit."
+
+# ═══════════════════════════════════════════════════════════════════════
 # Phase 1 — Fix: analyse issue, edit code, run tests, stage, commit
 # ═══════════════════════════════════════════════════════════════════════
 echo "=== Phase 1: Fix ==="
+echo "$PROMPT" > "$ARTIFACT_DIR/llm-fix-prompt.txt"
+
 pi-stream \
   --session "$SESSION_FILE" \
   --model "$MODEL" \
   --thinking "$THINKING" \
   -t read,edit,write,bash,grep,find,ls \
-  "You are fixing issue #$ISSUE_NUMBER in lichyflow (Go project).
-   Read the issue from $ARTIFACT_DIR/issue.json.
-   Analyze the code, make necessary changes, and run tests to verify.
-   When tests pass, stage the changed files (git add) and commit them
-   with a descriptive message. Use bash for go test, git add, git commit."
+  "$PROMPT"
 
 EXIT_CODE=$?
 if [ $EXIT_CODE -ne 0 ]; then
@@ -68,7 +101,6 @@ else
   echo "Changes are ready."
 fi
 
-# Check whether there's at least one commit on the branch vs default
 DEFAULT_BRANCH=$(lichyflow get value default_branch)
 if git log "origin/$DEFAULT_BRANCH..HEAD" --oneline | grep -q .; then
   lichyflow set flag has_commits
