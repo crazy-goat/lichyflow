@@ -40,14 +40,10 @@ jobs:
         with:
           go-version: '1.22'
           cache: true
-      - name: Build lichyflow
+      - name: Build
         run: go build -o lichyflow ./cmd/lichyflow/
-      - name: Build pi-stream
-        run: go build -o pi-stream ./cmd/pi-stream/
-      - name: Upload binaries
+      - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: binaries
-          path: |
-            lichyflow
-            pi-stream
+          name: lichyflow
+          path: lichyflow
