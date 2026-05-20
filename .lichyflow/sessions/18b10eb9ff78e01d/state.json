@@ -1,0 +1,12 @@
+{
+  "session_id": "18b10eb9ff78e01d",
+  "pipeline_name": "_viz",
+  "current_state": "setup_repo",
+  "started_at": "2026-05-19T19:38:39.806105422Z",
+  "updated_at": "2026-05-19T19:38:39.80610672Z",
+  "retry_count": {},
+  "flags": {},
+  "values": {},
+  "artifacts": {},
+  "exited": false
+}

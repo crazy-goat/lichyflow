@@ -1,0 +1,43 @@
+# Retry with variable increment
+# counter starts at 0, each attempt increments by 1
+# passes when counter > 2 (on 3rd attempt)
+pipeline:
+  name: retry-counter
+  start: init
+
+  steps:
+    - name: init
+      type: bash
+      command: |-
+        lichyflow set value counter 0
+        echo "counter initialized to 0"
+
+    - name: check
+      type: bash
+      command: |-
+        current=$(lichyflow get value counter)
+        new=$((current + 1))
+        lichyflow set value counter $new
+        echo "counter: $new"
+
+        if [ $new -gt 2 ]; then
+          echo "counter > 2, passing!"
+          exit 0
+        else
+          echo "counter <= 2, will retry ($new/3)"
+          exit 1
+        fi
+      retry:
+        max: 3
+        backoff: fixed
+        initial_delay: 1s
+      timeout: 10
+
+  transitions:
+    - event: next
+      src: init
+      dst: check
+
+    - event: next
+      src: check
+      dst: success

@@ -1,0 +1,39 @@
+# Simple CI: lint → test → deploy → success
+pipeline:
+  name: simple-ci
+  start: lint
+
+  steps:
+    - name: lint
+      type: bash
+      command: |-
+        echo "Running linter..."
+        lichyflow set flag lint_passed
+      timeout: 60
+
+    - name: test
+      type: bash
+      command: |-
+        echo "Running tests..."
+        lichyflow set flag test_passed
+      timeout: 120
+
+    - name: deploy
+      type: bash
+      command: |-
+        echo "Deploying..."
+        lichyflow set flag deployed
+      timeout: 300
+
+  transitions:
+    - event: next
+      src: lint
+      dst: test
+
+    - event: next
+      src: test
+      dst: deploy
+
+    - event: next
+      src: deploy
+      dst: success

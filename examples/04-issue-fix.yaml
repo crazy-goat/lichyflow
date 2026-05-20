@@ -1,0 +1,315 @@
+pipeline:
+  name: issue-fix
+  start: setup_repo
+  exits:
+  - name: ci_failed
+    exit_code: 2
+  - name: no_fix
+    exit_code: 3
+  steps:
+  - name: setup_repo
+    type: bash
+    command: "REPO_DIR=\"${LICHYFLOW_REPO_DIR:-.}\"\ncd \"$REPO_DIR\" 2>/dev/null\
+      \ || true\n\nif [ ! -d \"$REPO_DIR/.git\" ]; then\n  echo \"Cloning $LICHYFLOW_REPO_URL\
+      \ (depth 1)...\"\n  git clone --depth 1 --branch \"$LICHYFLOW_DEFAULT_BRANCH\"\
+      \ \"$LICHYFLOW_REPO_URL\" \"$REPO_DIR\"\nelse\n  echo \"Resetting to $LICHYFLOW_DEFAULT_BRANCH...\"\
+      \n  cd \"$REPO_DIR\"\n  git fetch origin \"$LICHYFLOW_DEFAULT_BRANCH\"\n  git\
+      \ checkout \"$LICHYFLOW_DEFAULT_BRANCH\"\n  git reset --hard \"origin/$LICHYFLOW_DEFAULT_BRANCH\"\
+      \n  git clean -fd\nfi\n\nACTUAL_BRANCH=$(cd \"$REPO_DIR\" && git branch --show-current)\n\
+      lichyflow set value default_branch \"$ACTUAL_BRANCH\"\n# Init loop counter for\
+      \ test retries\nlichyflow set value test_loop 0\nlichyflow set value lint_loop\
+      \ 0\n"
+    timeout: 120
+  - name: fetch_issue
+    type: bash
+    command: "cd \"${LICHYFLOW_REPO_DIR:-.}\"\nISSUE_NUM=\"$LICHYFLOW_ISSUE_NUMBER\"\
+      \n\ngh issue view \"$ISSUE_NUM\" --comments > \"$LICHYFLOW_ARTIFACT_DIR/issue.md\"\
+      \ 2>/dev/null\nif [ $? -ne 0 ]; then\n  gh issue view \"$ISSUE_NUM\" --json\
+      \ title,body,labels,comments > \"$LICHYFLOW_ARTIFACT_DIR/issue.json\" 2>/dev/null\n\
+      \  if [ $? -ne 0 ]; then\n    echo \"ERROR: Cannot fetch issue #$ISSUE_NUM\"\
+      \n    lichyflow unset flag issue_fetched\n    exit 1\n  fi\n  lichyflow set\
+      \ value issue_format json\nelse\n  lichyflow set value issue_format markdown\n\
+      fi\n\nlichyflow set flag issue_fetched\n\nTITLE=$(gh issue view \"$ISSUE_NUM\"\
+      \ --json title -q '.title' 2>/dev/null || echo \"issue-$ISSUE_NUM\")\nSLUG=$(echo\
+      \ \"$TITLE\" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g'\
+      \ | sed 's/^-//;s/-$//' | cut -c1-40)\nlichyflow set value issue_title \"$TITLE\"\
+      \nlichyflow set value issue_slug \"$SLUG\"\n"
+    retry:
+      max: 2
+      backoff: exponential
+      initial_delay: 5s
+    timeout: 30
+  - name: create_branch
+    type: bash
+    command: 'cd "${LICHYFLOW_REPO_DIR:-.}"
+
+      DEFAULT_BRANCH=$(lichyflow get value default_branch)
+
+      ISSUE_NUM="$LICHYFLOW_ISSUE_NUMBER"
+
+      SLUG=$(lichyflow get value issue_slug)
+
+
+      BRANCH_NAME="fix/${ISSUE_NUM}-${SLUG}"
+
+      git checkout -b "$BRANCH_NAME"
+
+      lichyflow set value branch_name "$BRANCH_NAME"
+
+      echo "Created branch: $BRANCH_NAME"
+
+      '
+    timeout: 30
+  - name: llm_fix
+    type: llm
+    agent: pi
+    prompt_template: issue-fix
+    artifact_input: issue
+    tools:
+    - read
+    - edit
+    - write
+    - bash
+    - grep
+    - find
+    - ls
+    thinking: high
+    retry:
+      max: 0
+    timeout: 600
+  - name: run_tests
+    type: bash
+    command: "cd \"${LICHYFLOW_REPO_DIR:-.}\"\n\n# Increment loop counter\nCURRENT=$(lichyflow\
+      \ get value test_loop)\nNEW=$((CURRENT + 1))\nlichyflow set value test_loop\
+      \ \"$NEW\"\n\n# Safety: max 3 test loops\nif [ \"$NEW\" -gt 3 ]; then\n  echo\
+      \ \"Test loop exceeded 3 iterations, giving up.\"\n  lichyflow unset flag tests_passed\n\
+      \  exit 1\nfi\n\necho \"Test loop iteration $NEW\"\nphp run-tests.php tests/\
+      \ > \"$LICHYFLOW_ARTIFACT_DIR/test-results.txt\" 2>&1\nEXIT_CODE=$?\n\nif [\
+      \ $EXIT_CODE -eq 0 ]; then\n  lichyflow set flag tests_passed\n  echo \"All\
+      \ tests passed.\"\nelse\n  lichyflow unset flag tests_passed\n  grep -A 5 \"\
+      FAIL\\|ERROR\\|FAILED\" \"$LICHYFLOW_ARTIFACT_DIR/test-results.txt\" > \"$LICHYFLOW_ARTIFACT_DIR/test-failures.txt\"\
+      \ 2>/dev/null || true\n  echo \"Tests failed. Artifact saved. Loop iteration\
+      \ $NEW/3.\"\nfi\n"
+    timeout: 300
+  - name: run_lint
+    type: bash
+    command: "cd \"${LICHYFLOW_REPO_DIR:-.}\"\n\nCURRENT=$(lichyflow get value lint_loop)\n\
+      NEW=$((CURRENT + 1))\nlichyflow set value lint_loop \"$NEW\"\n\nif [ \"$NEW\"\
+      \ -gt 3 ]; then\n  echo \"Lint loop exceeded 3 iterations, giving up.\"\n  lichyflow\
+      \ unset flag lint_passed\n  exit 1\nfi\n\nif [ -f \"composer.json\" ]; then\n\
+      \  if command -v phpstan &>/dev/null; then\n    phpstan analyse --error-format=raw\
+      \ > \"$LICHYFLOW_ARTIFACT_DIR/lint-results.txt\" 2>&1\n    if [ $? -eq 0 ];\
+      \ then\n      lichyflow set flag lint_passed\n      echo \"Lint passed.\"\n\
+      \    else\n      lichyflow unset flag lint_passed\n      echo \"Lint failed.\
+      \ See artifact lint-results.txt\"\n    fi\n  else\n    echo \"No linter available,\
+      \ skipping.\"\n    lichyflow set flag lint_passed\n  fi\nelif [ -f \"go.mod\"\
+      \ ]; then\n  go vet ./... > \"$LICHYFLOW_ARTIFACT_DIR/lint-results.txt\" 2>&1\n\
+      \  if [ $? -eq 0 ]; then\n    lichyflow set flag lint_passed\n  else\n    lichyflow\
+      \ unset flag lint_passed\n  fi\nelif [ -f \"Makefile\" ]; then\n  make lint\
+      \ > \"$LICHYFLOW_ARTIFACT_DIR/lint-results.txt\" 2>&1\n  if [ $? -eq 0 ]; then\n\
+      \    lichyflow set flag lint_passed\n  else\n    lichyflow unset flag lint_passed\n\
+      \  fi\nelse\n  echo \"No known linter, skipping.\"\n  lichyflow set flag lint_passed\n\
+      fi\n"
+    timeout: 120
+  - name: code_review
+    type: llm
+    agent: pi
+    prompt_template: code-review
+    tools:
+    - read
+    - bash
+    - grep
+    thinking: medium
+    timeout: 300
+  - name: commit_push
+    type: bash
+    command: "cd \"${LICHYFLOW_REPO_DIR:-.}\"\ngit add -A\n\nif git diff --cached\
+      \ --quiet; then\n  echo \"No changes to commit.\"\nelse\n  ISSUE_NUM=\"$LICHYFLOW_ISSUE_NUMBER\"\
+      \n  git commit -m \"fix: issue #$ISSUE_NUM\"\nfi\n\nBRANCH_NAME=$(lichyflow\
+      \ get value branch_name)\ngit push origin \"$BRANCH_NAME\"\n\nif [ $? -eq 0\
+      \ ]; then\n  lichyflow set flag pushed\nelse\n  lichyflow unset flag pushed\n\
+      \  exit 1\nfi\n"
+    timeout: 60
+  - name: create_pr
+    type: bash
+    command: "cd \"${LICHYFLOW_REPO_DIR:-.}\"\nISSUE_NUM=\"$LICHYFLOW_ISSUE_NUMBER\"\
+      \nBRANCH_NAME=$(lichyflow get value branch_name)\nDEFAULT_BRANCH=$(lichyflow\
+      \ get value default_branch)\n\nPR_URL=$(gh pr create \\\n  --base \"$DEFAULT_BRANCH\"\
+      \ \\\n  --head \"$BRANCH_NAME\" \\\n  --title \"fix: issue #$ISSUE_NUM\" \\\n\
+      \  --body \"Fixes #$ISSUE_NUM\" \\\n  2>&1)\n\nif [ $? -eq 0 ]; then\n  echo\
+      \ \"$PR_URL\" > \"$LICHYFLOW_ARTIFACT_DIR/pr-url\"\n  lichyflow set flag pr_created\n\
+      \  PR_NUM=$(echo \"$PR_URL\" | grep -o '[0-9]*$')\n  lichyflow set value pr_number\
+      \ \"$PR_NUM\"\nelse\n  lichyflow unset flag pr_created\n  exit 1\nfi\n"
+    retry:
+      max: 2
+      backoff: exponential
+      initial_delay: 10s
+    timeout: 60
+  - name: wait_ci
+    type: bash
+    command: "cd \"${LICHYFLOW_REPO_DIR:-.}\"\nBRANCH_NAME=$(lichyflow get value branch_name)\n\
+      \necho \"Waiting for CI on branch $BRANCH_NAME...\"\nfor i in $(seq 1 30); do\n\
+      \  STATUS=$(gh run list --branch \"$BRANCH_NAME\" --limit 3 --json conclusion,status\
+      \ 2>&1)\n\n  if echo \"$STATUS\" | grep -q '\"conclusion\":\"success\"'; then\n\
+      \    echo \"CI passed!\"\n    lichyflow set flag ci_passed\n    exit 0\n  fi\n\
+      \n  if echo \"$STATUS\" | grep -q '\"conclusion\":\"failure\"'; then\n    echo\
+      \ \"CI failed!\"\n    lichyflow unset flag ci_passed\n    RUN_ID=$(echo \"$STATUS\"\
+      \ | grep -o '\"databaseId\":[0-9]*' | head -1 | cut -d: -f2)\n    if [ -n \"\
+      $RUN_ID\" ]; then\n      gh run view \"$RUN_ID\" --log-failed > \"$LICHYFLOW_ARTIFACT_DIR/ci-failure.txt\"\
+      \ 2>/dev/null || true\n    fi\n    exit 1\n  fi\n\n  echo \"Attempt $i: CI still\
+      \ running...\"\n  sleep 20\ndone\n\necho \"Timeout waiting for CI.\"\nlichyflow\
+      \ unset flag ci_passed\nexit 1\n"
+    timeout: 600
+  - name: llm_fix_ci
+    type: llm
+    agent: pi
+    prompt_template: ci-remedy
+    artifact_input: ci-failure
+    tools:
+    - read
+    - edit
+    - write
+    - bash
+    - grep
+    thinking: medium
+    condition:
+      flag: ci_passed
+      negate: true
+    retry:
+      max: 1
+      initial_delay: 10s
+    timeout: 600
+  - name: recheck_ci
+    type: bash
+    command: "cd \"${LICHYFLOW_REPO_DIR:-.}\"\ngit add -A\ngit commit --amend --no-edit\n\
+      BRANCH_NAME=$(lichyflow get value branch_name)\ngit push origin \"$BRANCH_NAME\"\
+      \ --force-with-lease\n\nfor i in $(seq 1 30); do\n  STATUS=$(gh run list --branch\
+      \ \"$BRANCH_NAME\" --limit 3 --json conclusion 2>&1)\n  if echo \"$STATUS\"\
+      \ | grep -q '\"conclusion\":\"success\"'; then\n    lichyflow set flag ci_passed\n\
+      \    exit 0\n  fi\n  if echo \"$STATUS\" | grep -q '\"conclusion\":\"failure\"\
+      '; then\n    lichyflow unset flag ci_passed\n    exit 1\n  fi\n  sleep 20\n\
+      done\nlichyflow unset flag ci_passed\nexit 1\n"
+    condition:
+      flag: ci_passed
+      negate: true
+    timeout: 600
+  - name: merge_pr
+    type: bash
+    command: 'cd "${LICHYFLOW_REPO_DIR:-.}"
+
+      PR_NUM=$(lichyflow get value pr_number)
+
+      gh pr merge "$PR_NUM" --squash
+
+      '
+    timeout: 60
+  - name: close_issue
+    type: bash
+    command: 'cd "${LICHYFLOW_REPO_DIR:-.}"
+
+      ISSUE_NUM="$LICHYFLOW_ISSUE_NUMBER"
+
+      PR_NUM=$(lichyflow get value pr_number)
+
+      gh issue close "$ISSUE_NUM" --comment "Fixed in #$PR_NUM"
+
+      '
+    timeout: 30
+  - name: cleanup
+    type: bash
+    command: 'cd "${LICHYFLOW_REPO_DIR:-.}"
+
+      DEFAULT_BRANCH=$(lichyflow get value default_branch)
+
+      BRANCH_NAME=$(lichyflow get value branch_name)
+
+      git checkout "$DEFAULT_BRANCH"
+
+      git branch -D "$BRANCH_NAME"
+
+      git push origin --delete "$BRANCH_NAME" 2>/dev/null || true
+
+      git pull origin "$DEFAULT_BRANCH"
+
+      echo "Cleanup done."
+
+      '
+    timeout: 60
+  transitions:
+  - event: next
+    src: setup_repo
+    dst: fetch_issue
+  - event: next
+    src: fetch_issue
+    dst: create_branch
+  - event: next
+    src: create_branch
+    dst: llm_fix
+  - event: next
+    src: llm_fix
+    dst: run_tests
+  - event: tests_ok
+    src: run_tests
+    dst: run_lint
+    condition:
+      flag: tests_passed
+  - event: tests_fail
+    src: run_tests
+    dst: llm_fix
+    condition:
+      flag: tests_passed
+      negate: true
+  - event: lint_ok
+    src: run_lint
+    dst: code_review
+    condition:
+      flag: lint_passed
+  - event: lint_fail
+    src: run_lint
+    dst: llm_fix
+    condition:
+      flag: lint_passed
+      negate: true
+  - event: next
+    src: code_review
+    dst: commit_push
+  - event: next
+    src: commit_push
+    dst: create_pr
+  - event: next
+    src: create_pr
+    dst: wait_ci
+  - event: ci_ok
+    src: wait_ci
+    dst: merge_pr
+    condition:
+      flag: ci_passed
+  - event: ci_fail
+    src: wait_ci
+    dst: llm_fix_ci
+    condition:
+      flag: ci_passed
+      negate: true
+  - event: next
+    src: llm_fix_ci
+    dst: recheck_ci
+  - event: recheck_ok
+    src: recheck_ci
+    dst: merge_pr
+    condition:
+      flag: ci_passed
+  - event: recheck_fail
+    src: recheck_ci
+    dst: ci_failed
+    condition:
+      flag: ci_passed
+      negate: true
+  - event: next
+    src: merge_pr
+    dst: close_issue
+  - event: next
+    src: close_issue
+    dst: cleanup
+  - event: next
+    src: cleanup
+    dst: success

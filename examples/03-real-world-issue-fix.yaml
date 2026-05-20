@@ -1,0 +1,301 @@
+# Real-world issue-fix workflow (analysis from actual session)
+# This is the workflow LichyFlow automates based on the php-zvec BUG-005 session.
+# Before: 55 tool calls, 75% were deterministic bash operations.
+# After: only LLM steps are llm_fix and code_review, everything else is deterministic.
+
+pipeline:
+  name: php-zvec-issue-fix
+  start: setup_repo
+
+  exits:
+    - name: ci_failed
+      exit_code: 2
+    - name: no_issues
+      exit_code: 3
+
+  steps:
+    - name: setup_repo
+      type: bash
+      command: |
+        if [ ! -d .git ]; then
+          git clone "$REPO_URL" . 2>&1
+        fi
+        git fetch origin
+        git checkout "$REPO_DEFAULT_BRANCH"
+        git reset --hard "origin/$REPO_DEFAULT_BRANCH"
+        git pull origin "$REPO_DEFAULT_BRANCH"
+        DEFAULT_BRANCH=$(git branch --show-current)
+        lichyflow set value default_branch "$DEFAULT_BRANCH"
+        lichyflow set value test_loop 0
+      retry:
+        max: 2
+        backoff: exponential
+        initial_delay: 5s
+      timeout: 120
+
+    - name: create_branch
+      type: bash
+      command: |
+        DEFAULT_BRANCH=$(lichyflow get value default_branch)
+        ISSUE_NUMBER=$(lichyflow get value issue_number)
+        BRANCH_NAME="fix/bug-${ISSUE_NUMBER}-$(date +%Y%m%d)"
+        git checkout -b "$BRANCH_NAME"
+        lichyflow set value branch_name "$BRANCH_NAME"
+      timeout: 30
+
+    - name: fetch_issue
+      type: bash
+      command: |
+        ISSUE_NUMBER=$(lichyflow get value issue_number)
+        gh issue view "$ISSUE_NUMBER" --json title,body,labels > "$ARTIFACT_DIR/issue.json" 2>&1
+        if [ $? -eq 0 ]; then
+          lichyflow set flag issue_fetched
+        else
+          lichyflow unset flag issue_fetched
+        fi
+      retry:
+        max: 2
+        backoff: exponential
+        initial_delay: 3s
+      timeout: 30
+
+    - name: llm_fix
+      type: llm
+      agent: pi
+      prompt_template: issue-fix
+      artifact_input: issue
+      tools: [read, edit, write, bash, grep, find, ls]
+      thinking: high
+      retry:
+        max: 1
+        backoff: exponential
+        initial_delay: 10s
+      timeout: 600
+
+    - name: run_tests
+      type: bash
+      command: |
+        CURRENT=$(lichyflow get value test_loop)
+        NEW=$((CURRENT + 1))
+        lichyflow set value test_loop "$NEW"
+
+        if [ "$NEW" -gt 3 ]; then
+          echo "Test loop exceeded 3 iterations, giving up."
+          lichyflow unset flag tests_passed
+          exit 1
+        fi
+
+        echo "Test loop iteration $NEW"
+        php run-tests.php tests/ > "$ARTIFACT_DIR/test-results.txt" 2>&1
+        EXIT_CODE=$?
+
+        if [ $EXIT_CODE -eq 0 ]; then
+          lichyflow set flag tests_passed
+          echo "All tests passed."
+        else
+          lichyflow unset flag tests_passed
+          grep -A 5 "FAIL\|ERROR\|FAILED" "$ARTIFACT_DIR/test-results.txt" > "$ARTIFACT_DIR/test-failures.txt" 2>/dev/null || true
+          echo "Tests failed. Loop iteration $NEW/3."
+        fi
+      timeout: 300
+
+    - name: code_review
+      type: llm
+      agent: pi
+      prompt_template: code-review
+      # Prompt must instruct: if you find issues, write them to cr-issues.md
+      # If code is clean, don't create cr-issues.md at all
+      tools: [read, bash, grep, find, ls]
+      thinking: high
+      timeout: 300
+
+    - name: prepare_review
+      type: bash
+      command: |
+        # Remove stale cr-issues.md from previous loop iteration
+        rm -f "$ARTIFACT_DIR/cr-issues.md"
+      timeout: 10
+
+    - name: check_review
+      type: bash
+      command: |
+        # Check if code_review LLM step wrote cr-issues.md with issues
+        if [ -s "$ARTIFACT_DIR/cr-issues.md" ]; then
+          ISSUES=$(cat "$ARTIFACT_DIR/cr-issues.md")
+          echo "Code review found issues:"
+          echo "$ISSUES"
+          lichyflow set flag cr_issues_found
+        else
+          echo "Code review clean — no issues found."
+          lichyflow unset flag cr_issues_found
+        fi
+      timeout: 10
+
+    - name: commit_push
+      type: bash
+      command: |
+        git add -A
+        ISSUE_NUMBER=$(lichyflow get value issue_number)
+        git commit -m "fix: issue #$ISSUE_NUMBER" --allow-empty
+        BRANCH_NAME=$(lichyflow get value branch_name)
+        git push origin "$BRANCH_NAME"
+        if [ $? -eq 0 ]; then
+          lichyflow set flag pushed
+        else
+          lichyflow unset flag pushed
+        fi
+      timeout: 60
+
+    - name: create_pr
+      type: bash
+      command: |
+        ISSUE_NUMBER=$(lichyflow get value issue_number)
+        BRANCH_NAME=$(lichyflow get value branch_name)
+        DEFAULT_BRANCH=$(lichyflow get value default_branch)
+        PR_URL=$(gh pr create \
+          --base "$DEFAULT_BRANCH" \
+          --head "$BRANCH_NAME" \
+          --title "fix: issue #$ISSUE_NUMBER" \
+          --body "Fixs #$ISSUE_NUMBER" \
+          2>&1)
+        if [ $? -eq 0 ]; then
+          echo "$PR_URL" > "$ARTIFACT_DIR/pr-url"
+          lichyflow set flag pr_created
+        else
+          lichyflow unset flag pr_created
+        fi
+      retry:
+        max: 2
+        backoff: exponential
+        initial_delay: 10s
+      timeout: 60
+
+    - name: wait_ci
+      type: bash
+      command: |
+        BRANCH_NAME=$(lichyflow get value branch_name)
+        for i in $(seq 1 20); do
+          STATUS=$(gh run list --branch "$BRANCH_NAME" --limit 1 --json conclusion 2>&1)
+          if echo "$STATUS" | grep -q '"conclusion":"success"'; then
+            lichyflow set flag ci_passed
+            exit 0
+          elif echo "$STATUS" | grep -q '"conclusion":"failure"'; then
+            lichyflow unset flag ci_passed
+            exit 1
+          fi
+          sleep 20
+        done
+        lichyflow unset flag ci_passed
+        exit 1
+      timeout: 600
+
+    - name: merge_pr
+      type: bash
+      command: |
+        PR_URL=$(cat "$ARTIFACT_DIR/pr-url")
+        PR_NUMBER=$(echo "$PR_URL" | grep -o '[0-9]*$')
+        gh pr merge "$PR_NUMBER" --squash
+        if [ $? -eq 0 ]; then
+          lichyflow set flag pr_merged
+        else
+          lichyflow unset flag pr_merged
+        fi
+      timeout: 60
+
+    - name: close_issue
+      type: bash
+      command: |
+        ISSUE_NUMBER=$(lichyflow get value issue_number)
+        PR_URL=$(cat "$ARTIFACT_DIR/pr-url")
+        PR_NUMBER=$(echo "$PR_URL" | grep -o '[0-9]*$')
+        gh issue close "$ISSUE_NUMBER" --comment "Fixed in #$PR_NUMBER"
+      timeout: 30
+
+    - name: cleanup
+      type: bash
+      command: |
+        DEFAULT_BRANCH=$(lichyflow get value default_branch)
+        BRANCH_NAME=$(lichyflow get value branch_name)
+        git checkout "$DEFAULT_BRANCH"
+        git branch -D "$BRANCH_NAME"
+        git push origin --delete "$BRANCH_NAME" 2>/dev/null || true
+        git pull origin "$DEFAULT_BRANCH"
+      timeout: 60
+
+  transitions:
+    - event: next
+      src: setup_repo
+      dst: create_branch
+    - event: next
+      src: create_branch
+      dst: fetch_issue
+    - event: next
+      src: fetch_issue
+      dst: llm_fix
+    - event: next
+      src: llm_fix
+      dst: run_tests
+
+    # Tests: pass → code review, fail → back to llm_fix (loop)
+    - event: tests_ok
+      src: run_tests
+      dst: prepare_review
+      condition:
+        flag: tests_passed
+    - event: tests_fail
+      src: run_tests
+      dst: llm_fix
+      condition:
+        flag: tests_passed
+        negate: true
+
+    # Code review: prepare → LLM review → check if issues found
+    - event: next
+      src: prepare_review
+      dst: code_review
+    - event: next
+      src: code_review
+      dst: check_review
+
+    # Review found issues → back to llm_fix, clean → commit
+    - event: review_issues
+      src: check_review
+      dst: llm_fix
+      condition:
+        flag: cr_issues_found
+    - event: review_clean
+      src: check_review
+      dst: commit_push
+      condition:
+        flag: cr_issues_found
+        negate: true
+
+    - event: next
+      src: commit_push
+      dst: create_pr
+    - event: next
+      src: create_pr
+      dst: wait_ci
+
+    # CI: pass → merge, fail → exit
+    - event: ci_ok
+      src: wait_ci
+      dst: merge_pr
+      condition:
+        flag: ci_passed
+    - event: ci_fail
+      src: wait_ci
+      dst: ci_failed
+      condition:
+        flag: ci_passed
+        negate: true
+
+    - event: next
+      src: merge_pr
+      dst: close_issue
+    - event: next
+      src: close_issue
+      dst: cleanup
+    - event: next
+      src: cleanup
+      dst: success
