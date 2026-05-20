@@ -40,7 +40,7 @@ func (b *BashExecutor) Run(ctx context.Context, state *session.State, step *pipe
 	defer cancel()
 
 	// Execute the command with process group isolation
-		cmd := exec.CommandContext(ctx, "bash", "-e", "-c", step.Command)
+	cmd := exec.CommandContext(ctx, "bash", "-e", "-c", step.Command)
 	cmd.Env = append(os.Environ(), envToSlice(env)...)
 	// Run in current working directory (where lichyflow was invoked)
 
@@ -51,9 +51,9 @@ func (b *BashExecutor) Run(ctx context.Context, state *session.State, step *pipe
 		if cmd.Process != nil && cmd.Process.Pid > 0 {
 			pgid, err := syscall.Getpgid(cmd.Process.Pid)
 			if err == nil && pgid > 0 {
-						if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil {
-				log.Printf("[%s] failed to kill process group %d: %v", state.SessionID, pgid, err)
-			}
+				if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil {
+					log.Printf("[%s] failed to kill process group %d: %v", state.SessionID, pgid, err)
+				}
 			}
 		}
 		return nil
@@ -99,7 +99,10 @@ func (b *BashExecutor) buildEnv(state *session.State, step *pipeline.Step) map[s
 	env := b.store.EnvVars(state.SessionID, state.PipelineName, state.CurrentState)
 
 	// Add declared retry count
-	retryCount, _ := b.store.GetRetryCount(state.SessionID, step.Name)
+	retryCount, err := b.store.GetRetryCount(state.SessionID, step.Name)
+	if err != nil {
+		log.Printf("[%s] failed to get retry count for step %q: %v", state.SessionID, step.Name, err)
+	}
 	env["LICHYFLOW_RETRY_COUNT"] = fmt.Sprintf("%d", retryCount)
 	env["RETRY_COUNT"] = fmt.Sprintf("%d", retryCount)
 

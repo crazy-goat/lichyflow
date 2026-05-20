@@ -2,7 +2,7 @@ package pipeline
 
 // Requirement defines a required command/tool that must exist on the system.
 type Requirement struct {
-	Name    string `yaml:"name,omitempty" json:"name,omitempty"`     // friendly name for logs
+	Name    string `yaml:"name,omitempty" json:"name,omitempty"`       // friendly name for logs
 	Command string `yaml:"command,omitempty" json:"command,omitempty"` // command name (checked via "which")
 	Check   string `yaml:"check,omitempty" json:"check,omitempty"`     // bash command that must exit 0
 	Hint    string `yaml:"hint,omitempty" json:"hint,omitempty"`       // optional help text if missing
@@ -20,34 +20,34 @@ type Pipeline struct {
 
 // Step represents a single step in the pipeline.
 type Step struct {
-	Name           string     `yaml:"name" json:"name"`
-	Type           string     `yaml:"type" json:"type"` // "bash" or "llm"
-	Command        string     `yaml:"command,omitempty" json:"command,omitempty"`           // bash command
-	PromptTemplate string     `yaml:"prompt_template,omitempty" json:"prompt_template,omitempty"` // llm prompt template
-	ArtifactInput  string     `yaml:"artifact_input,omitempty" json:"artifact_input,omitempty"`
-	Agent          string     `yaml:"agent,omitempty" json:"agent,omitempty"`     // "pi" (default), "opencode", etc.
-	Model          string     `yaml:"model,omitempty" json:"model,omitempty"`
-	Tools          []string   `yaml:"tools,omitempty" json:"tools,omitempty"`
-	Thinking       string     `yaml:"thinking,omitempty" json:"thinking,omitempty"` // off, minimal, low, medium, high
+	Name           string            `yaml:"name" json:"name"`
+	Type           string            `yaml:"type" json:"type"`                                           // "bash" or "llm"
+	Command        string            `yaml:"command,omitempty" json:"command,omitempty"`                 // bash command
+	PromptTemplate string            `yaml:"prompt_template,omitempty" json:"prompt_template,omitempty"` // llm prompt template
+	ArtifactInput  string            `yaml:"artifact_input,omitempty" json:"artifact_input,omitempty"`
+	Agent          string            `yaml:"agent,omitempty" json:"agent,omitempty"` // "pi" (default), "opencode", etc.
+	Model          string            `yaml:"model,omitempty" json:"model,omitempty"`
+	Tools          []string          `yaml:"tools,omitempty" json:"tools,omitempty"`
+	Thinking       string            `yaml:"thinking,omitempty" json:"thinking,omitempty"` // off, minimal, low, medium, high
 	Env            map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
-	Retry          RetryConfig `yaml:"retry,omitempty" json:"retry,omitempty"`
-	Timeout        int        `yaml:"timeout,omitempty" json:"timeout,omitempty"` // seconds, default 300
+	Retry          RetryConfig       `yaml:"retry,omitempty" json:"retry,omitempty"`
+	Timeout        int               `yaml:"timeout,omitempty" json:"timeout,omitempty"` // seconds, default 300
 }
 
 // RetryConfig defines retry behavior for a step.
 type RetryConfig struct {
-	Max           int    `yaml:"max" json:"max"`                      // max retries, default 0
-	Backoff       string `yaml:"backoff,omitempty" json:"backoff,omitempty"` // "fixed" or "exponential", default "exponential"
-	InitialDelay  string `yaml:"initial_delay,omitempty" json:"initial_delay,omitempty"` // e.g. "5s", default "5s"
-	Timeout       int    `yaml:"timeout,omitempty" json:"timeout,omitempty"` // per-attempt timeout in seconds
+	Max          int    `yaml:"max" json:"max"`                                         // max retries, default 0
+	Backoff      string `yaml:"backoff,omitempty" json:"backoff,omitempty"`             // "fixed" or "exponential", default "exponential"
+	InitialDelay string `yaml:"initial_delay,omitempty" json:"initial_delay,omitempty"` // e.g. "5s", default "5s"
+	Timeout      int    `yaml:"timeout,omitempty" json:"timeout,omitempty"`             // per-attempt timeout in seconds
 }
 
 // Transition defines a state transition triggered by an event.
 type Transition struct {
-	Event     string      `yaml:"event" json:"event"`
-	Src       string      `yaml:"src" json:"src"`
-	Dst       string      `yaml:"dst" json:"dst"`
-	Condition *Condition  `yaml:"condition,omitempty" json:"condition,omitempty"`
+	Event     string     `yaml:"event" json:"event"`
+	Src       string     `yaml:"src" json:"src"`
+	Dst       string     `yaml:"dst" json:"dst"`
+	Condition *Condition `yaml:"condition,omitempty" json:"condition,omitempty"`
 }
 
 // Condition defines a conditional transition based on session flags/values.

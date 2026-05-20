@@ -29,9 +29,9 @@ type State struct {
 	RetryCount   map[string]int    `json:"retry_count"`
 	Flags        map[string]bool   `json:"flags"`
 	Values       map[string]string `json:"values"`
-	Artifacts   map[string]string `json:"artifacts"`
-	ExitCode    int               `json:"exit_code,omitempty"`
-	Exited      bool              `json:"exited"`
+	Artifacts    map[string]string `json:"artifacts"`
+	ExitCode     int               `json:"exit_code,omitempty"`
+	Exited       bool              `json:"exited"`
 }
 
 // NewStore creates a new session store rooted at baseDir.
@@ -65,7 +65,7 @@ func (s *Store) NewSession(pipelineName, startState string) (*State, error) {
 		RetryCount:   make(map[string]int),
 		Flags:        make(map[string]bool),
 		Values:       make(map[string]string),
-		Artifacts:   make(map[string]string),
+		Artifacts:    make(map[string]string),
 	}
 
 	if err := s.save(state); err != nil {
@@ -229,10 +229,10 @@ func (s *Store) EnvVars(sessionID, pipelineName, currentState string) map[string
 	}
 	sessionDir := s.sessionDir(sessionID)
 	vars := map[string]string{
-		"LICHYFLOW_SESSION_ID":    sessionID,
+		"LICHYFLOW_SESSION_ID":   sessionID,
 		"LICHYFLOW_PIPELINE":     pipelineName,
-		"LICHYFLOW_STATE":         currentState,
-		"LICHYFLOW_STORE":          s.baseDir,
+		"LICHYFLOW_STATE":        currentState,
+		"LICHYFLOW_STORE":        s.baseDir,
 		"LICHYFLOW_ARTIFACT_DIR": sessionDir,
 		"LICHYFLOW_FLAGS_DIR":    filepath.Join(sessionDir, "flags"),
 		"LICHYFLOW_VALUES_DIR":   filepath.Join(sessionDir, "values"),
